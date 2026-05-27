@@ -1,0 +1,170 @@
+services:
+
+  # ─────────────────────────────────────────────
+  # ZOOKEEPER — Kafka's coordination layer
+  # Manages broker metadata, leader election,
+  # and topic/partition state
+  # ─────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: nexusroute-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000       # heartbeat interval in ms
+    healthcheck:
+      # cub zk-ready is Confluent's own readiness checker built into every cp-* image.
+      # It sends the "ruok" four-letter command and waits for "imok".
+      # Far more reliable than piping through nc, which isn't in the image.
+      test: ["CMD", "cub", "zk-ready", "localhost:2181", "30"]
+      interval: 10s
+      timeout: 35s
+      retries: 5
+    networks:
+      - nexusroute-net
+
+  # ─────────────────────────────────────────────
+  # KAFKA
+  # ─────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: nexusroute-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"                   # exposed to your host machine
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Two listener configs — critical to understand:
+      #   PLAINTEXT     → used by containers inside Docker (kafka:29092)
+      #   PLAINTEXT_HOST → used by your laptop/apps outside Docker (localhost:9092)
+      # Without this split, either containers OR host can connect — never both.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Single broker in dev — replication factor 1 is fine.
+      # In production this would be 3 (across 3 brokers).
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # NEVER allow auto-creation in any real system.
+      # A typo in a topic name silently creates a 1-partition topic
+      # with no retention config — messages land there and are never processed.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      KAFKA_LOG4J_LOGGERS: "kafka.controller=INFO,kafka.producer.async.DefaultEventHandler=INFO,state.change.logger=INFO"
+    healthcheck:
+      # kafka-broker-api-versions is the lightest possible broker readiness check.
+      # Returns 0 only when Kafka is fully initialized and accepting connections.
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - nexusroute-net
+
+  # ─────────────────────────────────────────────
+  # KAFKA INIT — one-shot topic creation
+  # Runs once, creates all topics, then exits (code 0).
+  # Docker Compose does not restart exit-0 containers.
+  # ─────────────────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: nexusroute-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy    # ← Form 2: waits for broker readiness, not just process start
+    volumes:
+      - ./kafka/init-topics.sh:/init-topics.sh
+    entrypoint: ["bash", "/init-topics.sh"]
+    networks:
+      - nexusroute-net
+
+  # MongoDB is NOT in Docker.
+  # Two Atlas clusters are used — configured via environment variables:
+  #
+  #   LOGISTICS_MONGODB_URI   → read-only, existing Logistics production data
+  #                             (oms_shipments, tms_*, mst_* collections)
+  #
+  #   NEXUSROUTE_MONGODB_URI  → your personal Atlas cluster, read+write
+  #                             (shipment_sla_events, carrier_performance_metrics,
+  #                              pincode_delay_index, ml_predictions)
+  #
+  # To initialize NEXUSROUTE_MONGODB_URI collections, run:
+  #   mongosh "$NEXUSROUTE_MONGODB_URI" --file mongo/init.js
+  #
+  # Copy .env.example → .env and fill in both URIs before running any service.
+
+  # ─────────────────────────────────────────────
+  # REDIS — ML feature cache
+  # Key design: features:shipment:{awb}
+  #             features:carrier:{origin}:{dest}
+  #             model:versions
+  # ─────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: nexusroute-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save ""
+    # maxmemory-policy allkeys-lru:
+    #   When Redis hits 512mb, it evicts the Least Recently Used key.
+    #   Correct policy for a cache — we never want OOM, we want smart eviction.
+    #
+    # appendonly no + save "":
+    #   We don't persist the cache to disk. If Redis restarts, the nightly job
+    #   repopulates it. Persisting a cache buys nothing and wastes I/O.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexusroute-net
+
+  # ─────────────────────────────────────────────
+  # POSTGRESQL — relational entities only
+  # routing_decisions + sla_alert_rules
+  # ─────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: nexusroute-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexuspass
+      POSTGRES_DB: nexusroute
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexusroute"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexusroute-net
+
+# ─────────────────────────────────────────────
+# NAMED VOLUMES
+# Data survives docker-compose restart.
+# docker-compose down -v  ← wipes them when you need a clean slate.
+# ─────────────────────────────────────────────
+volumes:
+  redis-data:
+  postgres-data:
+
+networks:
+  nexusroute-net:
+    driver: bridge

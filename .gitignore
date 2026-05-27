@@ -1,0 +1,35 @@
+# Environment — never commit real credentials
+.env
+.env.local
+.env.*.local
+
+# JWT keys
+keys/
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# MLflow artifacts
+mlruns/
+mlflow.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
