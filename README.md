@@ -101,7 +101,7 @@ Each service runs independently. Start from the repo root:
 # Order Service (port 3001)
 npm run order-service
 
-# Routing Service (port 3002) — Phase 2 in progress
+# Routing Service (port 3002)
 npm run routing-service
 
 # Alert Service (port 3003) — Phase 2 in progress
@@ -130,13 +130,27 @@ NexusRoute/
 │       └── src/kafka/events.ts OrderCreatedEvent, RoutingDecidedEvent, ...
 │
 ├── services/
-│   ├── order-service/          Node.js + TypeScript — port 3001
-│   ├── routing-service/        Node.js + TypeScript — port 3002
-│   ├── alert-service/          Node.js + TypeScript — port 3003
-│   ├── graphql-gateway/        Node.js + TypeScript — port 3000
-│   ├── tracking-ingestion/     Go — port 8080
-│   ├── sla-monitoring/         Go — internal
-│   └── ml-serving/             Python + FastAPI — port 8000
+│   ├── order-service/          Node.js + TypeScript — port 3001 ✓
+│   │   └── src/
+│   │       ├── config/         app.ts · mongo.ts · kafka.ts · index.ts
+│   │       ├── db/             mongo.ts (two clients) · collections.ts
+│   │       ├── kafka/          producer.ts · consumer.ts · topics.ts
+│   │       ├── domain/         order.statemachine.ts
+│   │       └── routes/         orders.ts
+│   ├── routing-service/        Node.js + TypeScript — port 3002 ✓
+│   │   └── src/
+│   │       ├── config/         app.ts · mongo.ts · kafka.ts · postgres.ts · index.ts
+│   │       ├── db/             mongo.ts (logistics only) · postgres.ts · collections.ts
+│   │       ├── kafka/          producer.ts · consumer.ts · topics.ts
+│   │       ├── circuit-breaker/ circuit-breaker.ts
+│   │       ├── strategies/     types.ts · ml-ranking.strategy.ts · rule-based.strategy.ts
+│   │       ├── routes/         routing.ts
+│   │       └── routing-handler.ts
+│   ├── alert-service/          Node.js + TypeScript — port 3003 (pending)
+│   ├── graphql-gateway/        Node.js + TypeScript — port 3000 (pending)
+│   ├── tracking-ingestion/     Go — port 8080 (pending)
+│   ├── sla-monitoring/         Go — internal (pending)
+│   └── ml-serving/             Python + FastAPI — port 8000 (pending)
 │
 ├── kafka/
 │   └── init-topics.sh          Topic creation (5 topics, partition + retention config)
@@ -180,7 +194,7 @@ NexusRoute/
 - [x] **Phase 1** — Infrastructure: Kafka, MongoDB, Redis, PostgreSQL, Docker Compose
 - [ ] **Phase 2** — Core Services: Order, Routing, Alert, GraphQL Gateway
   - [x] Order Service — state machine, Kafka producer/consumer, REST API
-  - [ ] Routing Service — circuit breaker, ML call, PostgreSQL write
+  - [x] Routing Service — circuit breaker, ML call, PostgreSQL write
   - [ ] Alert Service — rule evaluation, notification dispatch
   - [ ] GraphQL Gateway — JWT, rate limiting, DataLoader
 - [ ] **Phase 3** — Go Services: Tracking Ingestion, SLA Monitoring
@@ -195,10 +209,14 @@ See [HLD.md](HLD.md) for full Architecture Decision Records (ADR-001 through ADR
 
 | Decision | Choice | Why |
 |---|---|---|
-| Primary DB | MongoDB Atlas | Existing Logistcis Database schema — document model fits variable scan events |
+| Primary DB | MongoDB Atlas | Existing Logistics Database schema — document model fits variable scan events |
 | New relational data | PostgreSQL | `routing_decisions` and `sla_alert_rules` need ACID + referential integrity |
 | ML feature cache | Redis (TTL 6h) | MongoDB join at inference time = 30–60ms. Redis = <2ms |
 | Async communication | Kafka | Temporal decoupling, replay on consumer crash, fan-out |
 | SLA predictor | XGBoost | Tabular data, SHAP-compatible, retrains in minutes |
 | Carrier ranker | LightGBM LambdaRank | Learning-to-rank objective matches the "sort carriers" problem |
 | Go for ingestion | goroutines | 10k webhooks/min — Go worker pool handles this with 2KB/goroutine overhead |
+| Routing circuit breaker | Hand-rolled state machine | CLOSED→OPEN→HALF_OPEN. 5 failures → OPEN, 30s → HALF_OPEN probe. Config from env vars |
+| Routing fallback | Strategy pattern | `MLRankingStrategy` and `RuleBasedStrategy` share one interface — swapped at runtime, no if-chains in handler |
+| Routing idempotency | PostgreSQL dedup | Check `routing_decisions WHERE order_id` before processing — handles Kafka at-least-once redelivery without Redis |
+| PostgreSQL + Kafka atomicity | Log, don't rethrow | PG write succeeds, Kafka publish fails → order stuck in PENDING. Logged with all IDs for manual recovery. Rethrowing causes infinite skip loop. Outbox pattern is Phase 3+ |

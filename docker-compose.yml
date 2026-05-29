@@ -156,6 +156,25 @@ services:
     networks:
       - nexusroute-net
 
+  # ─────────────────────────────────────────────
+  # KAFKA UI — browser-based Kafka management
+  # Topics, messages, consumer groups, lag
+  # http://localhost:8080
+  # ─────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: nexusroute-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: nexusroute-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - nexusroute-net
+
 # ─────────────────────────────────────────────
 # NAMED VOLUMES
 # Data survives docker-compose restart.
