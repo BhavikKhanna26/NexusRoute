@@ -101,3 +101,50 @@ CREATE TRIGGER trg_sla_alert_rules_updated_at
     BEFORE UPDATE ON sla_alert_rules
     FOR EACH ROW
     EXECUTE FUNCTION set_updated_at();
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- alerts
+-- ───────────────────────────────────────────────────────────────────────────────
+-- Every triggered SLA alert stored here. Status tracks the ops workflow:
+--   NOTIFIED → ACKNOWLEDGED → RESOLVED
+-- alert_id comes from the SlaAlertEvent (UUID from SLA Monitoring service).
+-- Unique constraint on alert_id gives idempotent inserts — Kafka at-least-once
+-- delivery cannot produce duplicate alert rows.
+-- ═══════════════════════════════════════════════════════════════════════════════
+CREATE TABLE alerts (
+    id                         SERIAL PRIMARY KEY,
+    alert_id                   VARCHAR(64)  NOT NULL UNIQUE,
+    awb_number                 VARCHAR(64)  NOT NULL,
+    carrier_code               VARCHAR(32),
+    seller_id                  VARCHAR(64)  NOT NULL,
+    risk_score                 DECIMAL(4,3) NOT NULL,
+    prediction_id              VARCHAR(64),
+    origin_pincode             VARCHAR(10),
+    destination_pincode        VARCHAR(10),
+    promised_delivery_date     TIMESTAMPTZ,
+    days_to_promised_delivery  INT,
+
+    status          VARCHAR(16) NOT NULL DEFAULT 'NOTIFIED'
+                    CHECK (status IN ('NOTIFIED', 'ACKNOWLEDGED', 'RESOLVED')),
+
+    triggered_at    TIMESTAMPTZ NOT NULL,
+    acknowledged_at TIMESTAMPTZ,
+    resolved_at     TIMESTAMPTZ,
+    trace_id        VARCHAR(64),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Query pattern: ops dashboard — alerts for a seller filtered by status
+CREATE INDEX idx_alerts_seller_id    ON alerts (seller_id);
+
+-- Query pattern: find all alerts for a shipment
+CREATE INDEX idx_alerts_awb_number   ON alerts (awb_number);
+
+-- Query pattern: list open alerts — partial index excludes RESOLVED rows,
+-- keeping the index small since resolved alerts are the majority over time.
+CREATE INDEX idx_alerts_open         ON alerts (seller_id, triggered_at DESC)
+    WHERE status != 'RESOLVED';
+
+-- Query pattern: time-range analytics
+CREATE INDEX idx_alerts_triggered_at ON alerts (triggered_at DESC);

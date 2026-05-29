@@ -146,7 +146,7 @@ NexusRoute/
 │   │       ├── strategies/     types.ts · ml-ranking.strategy.ts · rule-based.strategy.ts
 │   │       ├── routes/         routing.ts
 │   │       └── routing-handler.ts
-│   ├── alert-service/          Node.js + TypeScript — port 3003 (pending)
+│   ├── alert-service/          Node.js + TypeScript — port 3003 ✓
 │   ├── graphql-gateway/        Node.js + TypeScript — port 3000 (pending)
 │   ├── tracking-ingestion/     Go — port 8080 (pending)
 │   ├── sla-monitoring/         Go — internal (pending)
@@ -195,7 +195,7 @@ NexusRoute/
 - [ ] **Phase 2** — Core Services: Order, Routing, Alert, GraphQL Gateway
   - [x] Order Service — state machine, Kafka producer/consumer, REST API
   - [x] Routing Service — circuit breaker, ML call, PostgreSQL write
-  - [ ] Alert Service — rule evaluation, notification dispatch
+  - [x] Alert Service — rule evaluation, notification dispatch
   - [ ] GraphQL Gateway — JWT, rate limiting, DataLoader
 - [ ] **Phase 3** — Go Services: Tracking Ingestion, SLA Monitoring
 - [ ] **Phase 4** — ML Serving: FastAPI, XGBoost, LightGBM, SHAP, shadow mode
@@ -220,3 +220,7 @@ See [HLD.md](HLD.md) for full Architecture Decision Records (ADR-001 through ADR
 | Routing fallback | Strategy pattern | `MLRankingStrategy` and `RuleBasedStrategy` share one interface — swapped at runtime, no if-chains in handler |
 | Routing idempotency | PostgreSQL dedup | Check `routing_decisions WHERE order_id` before processing — handles Kafka at-least-once redelivery without Redis |
 | PostgreSQL + Kafka atomicity | Log, don't rethrow | PG write succeeds, Kafka publish fails → order stuck in PENDING. Logged with all IDs for manual recovery. Rethrowing causes infinite skip loop. Outbox pattern is Phase 3+ |
+| Alert storage | Store before dispatch | Alert persisted to PostgreSQL before any notification attempt — never lost even if all channels fail |
+| Alert notifications | Isolated per-channel try/catch | One webhook failure does not block email or other channels on the same rule |
+| Alert rules | Per-seller thresholds | Each rule has its own `risk_threshold` — email at 0.65, PagerDuty webhook at 0.85 for same seller |
+| alerts table idempotency | UNIQUE + pre-check | Kafka at-least-once cannot produce duplicate alert rows; explicit check gives clean log over PG constraint error |
