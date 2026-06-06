@@ -9,6 +9,7 @@
     "order-service": "npm run dev --workspace=services/order-service",
     "routing-service": "npm run dev --workspace=services/routing-service",
     "alert-service": "npm run dev --workspace=services/alert-service",
-    "gateway": "npm run dev --workspace=services/graphql-gateway"
+    "gateway": "npm run dev --workspace=services/graphql-gateway",
+    "typecheck": "npm run build --workspace=packages/contracts && npx tsc --noEmit --project services/order-service/tsconfig.json && npx tsc --noEmit --project services/routing-service/tsconfig.json && npx tsc --noEmit --project services/alert-service/tsconfig.json && npx tsc --noEmit --project services/graphql-gateway/tsconfig.json"
   }
 }
