@@ -1,0 +1,133 @@
+name: CI
+
+# Triggers: every push to main, and every PR targeting main.
+# PRs run checks before merge — main never sees broken code.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── 1. Contracts ─────────────────────────────────────────────────────────────
+  # Must run first. Every Node service imports from @nexusroute/contracts.
+  # Without the compiled dist/, TypeScript can't resolve those imports.
+  build-contracts:
+    name: Build Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-node with cache: 'npm' automatically caches node_modules
+      # keyed on package-lock.json hash. Same lock file = restored cache,
+      # no reinstall. ~60-80% faster after the first run.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # npm ci reads package-lock.json exactly — reproducible installs.
+      # npm install silently upgrades; ci errors if the lock file is out of sync.
+      - run: npm ci
+
+      - run: npm run build --workspace=packages/contracts
+
+      # Artifacts pass files between jobs. Jobs don't share a filesystem —
+      # each runs on a separate VM. upload here, download in typecheck jobs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contracts-dist
+          path: packages/contracts/dist
+          retention-days: 1  # CI artifact, not a release — 1 day is enough
+
+  # ── 2. TypeScript services ───────────────────────────────────────────────────
+  # Matrix strategy: one job definition, runs 4 times in parallel —
+  # one per service. No copy-pasting. If you add a service, add its name here.
+  typecheck:
+    name: Type-check / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: build-contracts  # waits for contracts dist/ to exist before starting
+    strategy:
+      fail-fast: false  # if order-service fails, continue checking the others
+      matrix:
+        service:
+          - order-service
+          - routing-service
+          - alert-service
+          - graphql-gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'  # same cache key — restored from build-contracts run
+
+      - run: npm ci
+
+      # Restore the contracts dist/ that build-contracts uploaded.
+      # Without this, tsc can't resolve @nexusroute/contracts imports.
+      - uses: actions/download-artifact@v4
+        with:
+          name: contracts-dist
+          path: packages/contracts/dist
+
+      # --noEmit: run the full type-checker but produce no output files.
+      # Correctness check only — no dist/ to manage or cache.
+      - name: Type-check
+        run: npx tsc --noEmit
+        working-directory: services/${{ matrix.service }}
+
+  # ── 3. Go services ───────────────────────────────────────────────────────────
+  # Runs in parallel with the Node chain — no shared dependencies.
+  # Skipped automatically if Go services haven't been pushed yet
+  # (hashFiles returns '' when no file matches).
+  build-go:
+    name: Build Go Services
+    runs-on: ubuntu-latest
+    if: hashFiles('services/tracking-ingestion/go.mod') != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-go caches the module download cache (~/.cache/go/pkg/mod)
+      # keyed on go.sum — same dependencies = instant restore.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: |
+            services/tracking-ingestion/go.sum
+            services/sla-monitoring/go.sum
+
+      # go build: compiles the service (catches missing imports, syntax errors)
+      # go vet: static analysis — catches common bugs tsc can't see
+      #   e.g. incorrect Printf format strings, unreachable code, mutex copies
+      - name: Build + vet tracking-ingestion
+        run: go build ./... && go vet ./...
+        working-directory: services/tracking-ingestion
+
+      - name: Build + vet sla-monitoring
+        run: go build ./... && go vet ./...
+        working-directory: services/sla-monitoring
+
+  # ── 4. Gate ──────────────────────────────────────────────────────────────────
+  # Single status check for branch protection to require.
+  # Without this gate, you'd need to list every matrix job + Go job individually
+  # in GitHub's branch protection rule — and update it every time you add a service.
+  # One gate job that depends on everything = one rule, forever.
+  #
+  # if: always() — this job must run even when dependencies fail/are skipped,
+  # so it can report the correct final status. Without always(), GitHub would
+  # skip this job when a dependency fails, leaving branch protection hanging.
+  ci-passed:
+    name: CI Passed
+    runs-on: ubuntu-latest
+    needs: [typecheck, build-go]
+    if: always()
+    steps:
+      - name: Evaluate results
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All checks passed (skipped jobs counted as OK)"
