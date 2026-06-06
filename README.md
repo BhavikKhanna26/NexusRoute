@@ -192,11 +192,11 @@ NexusRoute/
 ## Phase Progress
 
 - [x] **Phase 1** — Infrastructure: Kafka, MongoDB, Redis, PostgreSQL, Docker Compose
-- [ ] **Phase 2** — Core Services: Order, Routing, Alert, GraphQL Gateway
+- [x] **Phase 2** — Core Services: Order, Routing, Alert, GraphQL Gateway
   - [x] Order Service — state machine, Kafka producer/consumer, REST API
   - [x] Routing Service — circuit breaker, ML call, PostgreSQL write
   - [x] Alert Service — rule evaluation, notification dispatch
-  - [ ] GraphQL Gateway — JWT, rate limiting, DataLoader
+  - [x] GraphQL Gateway — JWT RS256, token bucket rate limiting, DataLoader
 - [ ] **Phase 3** — Go Services: Tracking Ingestion, SLA Monitoring
 - [ ] **Phase 4** — ML Serving: FastAPI, XGBoost, LightGBM, SHAP, shadow mode
 - [ ] **Phase 5** — ML Platform: nightly batch, drift monitoring, retraining pipeline
